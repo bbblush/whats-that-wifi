@@ -26,7 +26,7 @@ To install What's-That-Wifi you need to:
 - Unzip the archive, install python.
 - Install all needed dependencies, they are in the "Python Requirements" chapter
 - Make sure that there is an icon (icon.png) in the working folder (where the .py file is)
-- If app still doesn't work, you can contact me on this email [email]
+- If app still doesn't work, you can contact me on this email adress [email]
 
 
 # What's-That-WiFi (RU)
@@ -57,4 +57,4 @@ To install What's-That-Wifi you need to:
 - Распаковать архив, установить python.
 - Установите все необходимые зависимости, они приведены в разделе "Требования к Python"
 - Убедитесь, что в рабочей папке (где находится файл .py) есть значок (icon.png)
-- Если приложение по-прежнему не работает, вы можете связаться со мной по этому электронному письму [email]
+- Если приложение по-прежнему не работает, вы можете связаться со мной по этой электронной почте [email]
