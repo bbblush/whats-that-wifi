@@ -1,4 +1,4 @@
-# What's-That-WiFi (**EN**/RU)
+# What's-That-WiFi (*EN*/RU)
 
 **Technical requirements:**
 - Processor: 1 GHz+
@@ -29,7 +29,7 @@ To install What's-That-Wifi you need to:
 - If app still doesn't work, you can contact me on this email [email]
 
 
-# What's-That-WiFi (EN/**RU**)
+# What's-That-WiFi (EN/*RU*)
 
 **Технические требования:**
 - - Процессор: 1 ГГц+
