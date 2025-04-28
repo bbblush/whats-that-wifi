@@ -1,4 +1,4 @@
-# What's-That-WiFi (EN)
+# What's-That-WiFi
 
 **Technical requirements:**
 - Processor: 1 GHz+
