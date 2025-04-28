@@ -7,7 +7,7 @@ from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import QTimer
 from plyer import notification
 
-security_scores = {
+sec_bal = {
     'encryption': {
         'open': -50,
         'WEP': -40,
@@ -56,9 +56,9 @@ class WiFiAnalyzer:
 
     def scan_networks(self):
         try:
-            result = subprocess.run(['netsh', 'wlan', 'show', 'networks', 'mode=Bssid'], stdout=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
-            output = result.stdout.decode('utf-8')
-            networks = self.parse_netsh_output(output)
+            res = subprocess.run(['netsh', 'wlan', 'show', 'networks', 'mode=Bssid'], stdout=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
+            out = res.stdout.decode('utf-8')
+            networks = self.parse_netsh_output(out)
             self.networks = networks
         except Exception as e:
             notification.notify(
@@ -68,7 +68,7 @@ class WiFiAnalyzer:
 
     def analyze_network(self, network):
         details = {}
-        score = 0
+        bal = 0
         encryption = network.get("encryption", "open")
         if "WPA3" in encryption:
             encryption_key = "WPA3"
@@ -81,43 +81,53 @@ class WiFiAnalyzer:
         else:
             encryption_key = "open"
     
-        score += security_scores['encryption'].get(encryption_key, 0)
-        details['encryption'] = f"Тип шифрования: {encryption} ({security_scores['encryption'][encryption_key]} points)"
+        bal += sec_bal['encryption'].get(encryption_key, 0)
+        details['encryption'] = f"Encryption type: {encryption} ({sec_bal['encryption'][encryption_key]} points)"
     
         signal = network.get("signal", 0)   
         signal_score = self.analyze_signal_strength(signal)
-        score += signal_score
-        details['signal'] = f"Сила сигнала: {signal}% ({signal_score} points)"
+        bal += signal_score
+        details['signal'] = f"Signal strength: {signal}% ({signal_score} points)"
     
         channel_width = network.get("channel_width", "20 MHz")
         channel_width_score = self.analyze_channel_width(channel_width)
-        score += channel_width_score
-        details['channel_width'] = f"Широта вещания: {channel_width} ({channel_width_score} баллов)"
+        bal += channel_width_score
+        details['channel_width'] = f"Channel width: {channel_width} ({channel_width_score} points)"
     
         standard = network.get("wifi_standard", "802.11n")
         standard_score = self.analyze_wifi_standard(standard)
-        score += standard_score
-        details['wifi_standard'] = f"WiFi-Стандарт: {standard} ({standard_score} баллов)"
+        bal += standard_score
+        details['wifi_standard'] = f"WiFi Standard: {standard} ({standard_score} points)"
     
         frequency = network.get("frequency", "2.4 GHz")
         frequency_score = self.analyze_frequency_band(frequency)
-        score += frequency_score
-        details['frequency_band'] = f"Частота вещания: {frequency} ({frequency_score} баллов)"
+        bal += frequency_score
+        details['frequency_band'] = f"Frequency band: {frequency} ({frequency_score} points)"
 
         bssid = network.get("bssid")
-    
+        
         if self.check_evil_twin(network.get("ssid")):
-            score += security_scores['evil_twin']['different_vendor']
-            details['evil_twin'] = "Обнаружена атака Evil Twin! (-40 баллов)"
+            bal += sec_bal['evil_twin']['different_vendor']
+            details['evil_twin'] = "Evil Twin attack detected! (-40 points)"
         else:
-            details['evil_twin'] = "Атака Evil Twin не обнаружена (0 points)"
+            details['evil_twin'] = "No Evil Twin attack detected (0 points)"
     
         vendor_score = self.check_vendor(bssid)
-        score += security_scores['vendor'].get(vendor_score, 0)
-        details['vendor'] = f"Производитель: {vendor_score} ({security_scores['vendor'][vendor_score]} баллов)"
-    
-        details['total_score'] = f"Итоговый балл: {score}"
-        return score, details
+        bal += sec_bal['vendor'].get(vendor_score, 0)
+        details['vendor'] = f"Vendor: {vendor_score} ({sec_bal['vendor'][vendor_score]} points)"
+
+        connected_devices = network.get("connected_devices", 0)
+        if connected_devices > 10:
+            bal -= 5
+            details["connected_devices"] = f"Number of connections: {connected_devices} (-5 points)"
+        elif (connected_devices <= 5) and (connected_devices >= 0):
+            bal += 5
+            details["connected_devices"] = f"Number of connections: {connected_devices} (+5 points)"
+        elif connected_devices == -1:
+            details["connected_devices"] = f"Number of connections not detected (0 points)"
+
+        details['total_score'] = f"Total score: {bal}"
+        return bal, details
 
     def check_evil_twin(self, ssid):
         duplicates = [n for n in self.networks if n.get("ssid") == ssid]
@@ -138,7 +148,7 @@ class WiFiAnalyzer:
         except Exception as e:
             notification.notify(
             title="What’s-that-WiFi?",
-            message=(f"Error checking vendor for {bssid}: {e}"),
+            message=(f"Error checking vendor for {bssid}: {e}"),    
             timeout=10
             )
 
@@ -157,31 +167,36 @@ class WiFiAnalyzer:
 
     def analyze_signal_strength(self, signal):
         if signal >= 80:
-            return security_scores['signal_strength']['strong']
+            return sec_bal['signal_strength']['strong']
         elif signal >= 50:
-            return security_scores['signal_strength']['moderate']
+            return sec_bal['signal_strength']['moderate']
         else:
-            return security_scores['signal_strength']['weak']
+            return sec_bal['signal_strength']['weak']
 
     def analyze_channel_width(self, channel_width):
-        return security_scores['channel_width'].get(channel_width, 0)
+        return sec_bal['channel_width'].get(channel_width, 0)
 
     def analyze_wifi_standard(self, standard):
-        return security_scores['wifi_standard'].get(standard, 0)
+        return sec_bal['wifi_standard'].get(standard, 0)
 
     def analyze_frequency_band(self, frequency):
-        return security_scores['frequency_band'].get(frequency, 0)
+        return sec_bal['frequency_band'].get(frequency, 0)
 
-    def parse_netsh_output(self, output):
+    def parse_netsh_output(self, out):
         networks = []
-        lines = output.split('\n')
+        lines = out.split('\n')
         current_network = {}
+        has_connected_devices = False
+
         for line in lines:
             line = line.strip()
             if line.startswith("SSID"):
                 if current_network:
+                    if not has_connected_devices:
+                        current_network["connected_devices"] = -1
                     networks.append(current_network)
                 current_network = {"ssid": line.split(":")[1].strip()}
+                has_connected_devices = False
             elif line.startswith("BSSID"):
                 current_network["bssid"] = line.split(":")[1].strip()
             elif "Шифрование" in line:
@@ -196,10 +211,20 @@ class WiFiAnalyzer:
                     current_network["signal"] = signal
                 except ValueError:
                     current_network["signal"] = 0
-        if current_network:
-            networks.append(current_network)
-        return networks
+            elif "Подключенные станции" in line:
+                has_connected_devices = True
+                try:
+                    connected_devices = int(line.split(":")[1].strip())
+                    current_network["connected_devices"] = connected_devices
+                except ValueError:
+                    current_network["connected_devices"] = -1 
 
+        if current_network:
+            if not has_connected_devices:
+                current_network["connected_devices"] = -1
+            networks.append(current_network)
+    
+        return networks
 
 class WiFiApp(QMainWindow):
     def __init__(self):
@@ -229,12 +254,12 @@ class WiFiApp(QMainWindow):
         right_column_layout.addWidget(self.details_text, stretch=4)
 
         button_layout = QHBoxLayout()
-        self.scan_button = QPushButton('Сканировать ближайшие сети')
+        self.scan_button = QPushButton('Scan nearby networks')
         self.scan_button.setMinimumHeight(50)
         self.scan_button.clicked.connect(self.update_networks)
         button_layout.addWidget(self.scan_button, stretch=8)
 
-        self.exit_button = QPushButton('Выход')
+        self.exit_button = QPushButton('Exit')
         self.exit_button.setFixedSize(100, 50)
         self.exit_button.clicked.connect(self.close_application)
         button_layout.addWidget(self.exit_button, stretch=2)
@@ -249,7 +274,7 @@ class WiFiApp(QMainWindow):
         if not QSystemTrayIcon.isSystemTrayAvailable():
             notification.notify(
             title="What’s-that-WiFi?",
-            message=('Системный трей недоступен на данной системе.'),
+            message=('System tray is not available on this system.'),
             )
 
             return
@@ -258,9 +283,9 @@ class WiFiApp(QMainWindow):
         self.tray_icon.setIcon(QIcon("icon.png"))
 
         menu = QMenu()
-        restore_action = QAction("Открыть", self)
+        restore_action = QAction("Open", self)
         restore_action.triggered.connect(self.show)
-        quit_action = QAction("Выйти", self)
+        quit_action = QAction("Exit", self)
         quit_action.triggered.connect(self.close_application)
 
         menu.addAction(restore_action)
@@ -274,7 +299,7 @@ class WiFiApp(QMainWindow):
         self.hide()
         self.tray_icon.showMessage(
             "What’s-that-WiFi?",
-            "Приложение свернуто в трей",
+            "The application has been minimized to the tray",
             QSystemTrayIcon.Information,
             2000
         )
@@ -282,8 +307,8 @@ class WiFiApp(QMainWindow):
     def close_application(self):
         reply = QMessageBox.question(
             self,
-            'Выход',
-            'Вы уверены, что хотите выйти?',
+            'Exit',
+            'Are you sure you want to exit?',
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
@@ -294,8 +319,8 @@ class WiFiApp(QMainWindow):
         self.analyzer.scan_networks()
         self.network_list.clear()
         for network in self.analyzer.networks:
-            score, _ = self.analyzer.analyze_network(network)
-            item = f"{network.get('ssid')} - Баллы: {score}"
+            bal, _ = self.analyzer.analyze_network(network)
+            item = f"{network.get('ssid')} - Score: {bal}"
             self.network_list.addItem(item)
 
     def show_network_details(self, item):
@@ -315,11 +340,11 @@ class WiFiApp(QMainWindow):
         try:
             self.analyzer.scan_networks()
 
-            result = subprocess.run(['netsh', 'wlan', 'show', 'interfaces'], stdout=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
-            output = result.stdout.decode('utf-8')
+            res = subprocess.run(['netsh', 'wlan', 'show', 'interfaces'], stdout=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
+            out = res.stdout.decode('utf-8')
             ssid = None
 
-            for line in output.split('\n'):
+            for line in out.split('\n'):
                 if "SSID" in line and "BSSID" not in line:
                     ssid = line.split(":")[1].strip()
                     break
@@ -328,8 +353,8 @@ class WiFiApp(QMainWindow):
                 self.previous_ssid = ssid
                 network = next((n for n in self.analyzer.networks if n.get("ssid") == ssid), None)
                 if network:
-                    score, _ = self.analyzer.analyze_network(network)
-                    self.send_notification(ssid, score)
+                    bal, _ = self.analyzer.analyze_network(network)
+                    self.send_notification(ssid, bal)
         except Exception as e:
             notification.notify(
             title="What’s-that-WiFi?",
@@ -337,17 +362,17 @@ class WiFiApp(QMainWindow):
         )
 
 
-    def send_notification(self, ssid, score):
-        if score <= 10:
-            message = f"Сеть '{ssid}' критически небезопасна! Баллы: {score}"
-        if (score > -10) and (score <= 0):
-            message = f"Сеть '{ssid}' небезопасна. Баллы: {score}"
-        if (score > 0) and (score <= 10):
-            message = f"Сеть '{ssid}' относительно безопасна. Баллы: {score}"
-        if (score > 10) and (score <= 20):
-            message = f"Сеть '{ssid}' безопасна. Баллы: {score}"
-        if score > 20:
-            message = f"Сеть '{ssid}' абсолютно безопасна. Баллы: {score}"
+    def send_notification(self, ssid, bal):
+        if bal <= 10:
+            message = f"Network '{ssid}' is critically unsafe! Score: {bal}"
+        if (bal > -10) and (bal <= 0):
+            message = f"Network '{ssid}' is unsafe. Score: {bal}"
+        if (bal > 0) and (bal <= 10):
+            message = f"Network '{ssid}' is relatively safe. Score: {bal}"
+        if (bal > 10) and (bal <= 20):
+            message = f"Network '{ssid}' is safe. Score: {bal}"
+        if bal > 20:
+            message = f"Network '{ssid}' is absolutely safe. Score: {bal}"
         notification.notify(
             title="What’s-that-WiFi?",
             message=message,
