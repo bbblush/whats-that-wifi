@@ -1,0 +1,5 @@
+PyQt5==5.15.9
+fuzzywuzzy==0.18.0
+fuzzywuzzy[speedup]==0.18.0
+requests==2.31.0
+plyer==2.1.0
