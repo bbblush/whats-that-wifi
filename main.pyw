@@ -6,8 +6,8 @@ from fuzzywuzzy import fuzz
 from PyQt5.QtWidgets import (QApplication, QHBoxLayout, QMainWindow, QListWidget, QListWidgetItem,
                              QLabel, QStyle, QVBoxLayout, QWidget, QPushButton, QTextEdit, QAction, QMenu,
                              QMessageBox, QSystemTrayIcon, QStackedWidget, QComboBox, QFormLayout, QScrollArea, QStyledItemDelegate, QCheckBox, QProgressBar)
-from PyQt5.QtGui import QIcon, QColor, QPalette, QPixmap, QPen
-from PyQt5.QtCore import QTimer, Qt, QSize, QObject, pyqtSignal, QRunnable, QThreadPool
+from PyQt5.QtGui import QIcon, QColor, QPalette, QPixmap, QPen, QPainter
+from PyQt5.QtCore import QTimer, Qt, QSize, QObject, pyqtSignal, QRunnable, QThreadPool, QPropertyAnimation, QEasingCurve, QRect, pyqtProperty
 from plyer import notification
 import configparser
 import os
@@ -336,6 +336,66 @@ class ScoreDelegate(QStyledItemDelegate):
         size.setHeight(30)
         return size
 
+class SidebarListWidget(QListWidget):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._indicator_rect = QRect()
+        self._indicator_anim = QPropertyAnimation(self, b"indicatorRect")
+        self._indicator_anim.setDuration(220)
+        self._indicator_anim.setEasingCurve(QEasingCurve.InOutCubic)
+        self._first_layout = True
+        self._first_offset = 26
+
+    def indicatorRect(self):
+        return self._indicator_rect
+
+    def setIndicatorRect(self, rect):
+        self._indicator_rect = rect
+        self.viewport().update()
+
+    indicatorRect = pyqtProperty(QRect, fget=indicatorRect, fset=setIndicatorRect)
+
+    def animate_indicator_to_current(self, animated=True):
+        item = self.currentItem()
+        if not item:
+            return
+        rect = self.visualItemRect(item)
+        if rect.isNull():
+            return
+        # Tweak these to fine-tune the indicator's position/size.
+        # inset_x: left/right padding inside the item rect
+        # inset_y: top/bottom padding inside the item rect
+        # y_offset: vertical shift (positive moves the indicator down)
+        inset_x = 2
+        inset_y = 4
+        y_offset = 2
+        target = QRect(
+            rect.x() + inset_x,
+            rect.y() + inset_y + y_offset,
+            rect.width() - inset_x * 2,
+            rect.height() - inset_y * 1
+        )
+        if self._first_layout:
+            target = target.translated(0, self._first_offset)
+            self._first_layout = False
+        if animated:
+            self._indicator_anim.stop()
+            self._indicator_anim.setStartValue(self._indicator_rect)
+            self._indicator_anim.setEndValue(target)
+            self._indicator_anim.start()
+        else:
+            self.setIndicatorRect(target)
+
+    def paintEvent(self, event):
+        if not self._indicator_rect.isNull():
+            painter = QPainter(self.viewport())
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(accent_color))
+            painter.drawRoundedRect(self._indicator_rect, 6, 6)
+            painter.end()
+        super().paintEvent(event)
+
 class VendorLookupSignals(QObject):
     finished = pyqtSignal(str, str)
 
@@ -386,6 +446,8 @@ class NetworksWidget(QWidget):
         self.scan_button = QPushButton('Scan Nearby Networks')
         self.scan_button.setMinimumHeight(50)
         self.scan_button.clicked.connect(self.update_networks)
+        self.scan_button.pressed.connect(self.on_scan_pressed)
+        self.scan_button.released.connect(self.on_scan_released)
         button_layout.addWidget(self.scan_button, stretch=8)
 
         right_column_layout.addLayout(button_layout, stretch=1)
@@ -434,6 +496,29 @@ class NetworksWidget(QWidget):
                 self.threadpool.start(task)
 
         self.details_text.setHtml("<div style='text-align: center; vertical-align: middle; height: 100%; display: table-cell;'>Click a network to view details</div>")
+
+    def on_scan_pressed(self):
+        if not hasattr(self, "scan_button_anim"):
+            self.scan_button_anim = QPropertyAnimation(self.scan_button, b"geometry")
+            self.scan_button_anim.setDuration(90)
+            self.scan_button_anim.setEasingCurve(QEasingCurve.OutQuad)
+        self._scan_button_geom = self.scan_button.geometry()
+        rect = self._scan_button_geom
+        shrink = 4
+        target = QRect(rect.x() + shrink, rect.y() + shrink, rect.width() - shrink * 2, rect.height() - shrink * 2)
+        self.scan_button_anim.stop()
+        self.scan_button_anim.setStartValue(rect)
+        self.scan_button_anim.setEndValue(target)
+        self.scan_button_anim.start()
+
+    def on_scan_released(self):
+        if not hasattr(self, "scan_button_anim"):
+            return
+        rect = getattr(self, "_scan_button_geom", self.scan_button.geometry())
+        self.scan_button_anim.stop()
+        self.scan_button_anim.setStartValue(self.scan_button.geometry())
+        self.scan_button_anim.setEndValue(rect)
+        self.scan_button_anim.start()
 
     def on_vendor_checked(self, bssid, status):
         if bssid in self.vendor_tasks_in_flight:
@@ -606,7 +691,7 @@ class WiFiApp(QMainWindow):
         self.stacked_widget.addWidget(self.settings_widget)
         self.stacked_widget.addWidget(self.about_widget)
 
-        self.sidebar = QListWidget()
+        self.sidebar = SidebarListWidget()
         self.sidebar.setMaximumWidth(150)
         self.sidebar.setSpacing(5)
         self.sidebar.setIconSize(QSize(24, 24))
@@ -648,6 +733,7 @@ class WiFiApp(QMainWindow):
         self.setCentralWidget(central_widget)
 
         self.sidebar.setCurrentRow(2)
+        self.sidebar.animate_indicator_to_current(animated=False)
 
     def on_sidebar_item_clicked(self, index):
         if index == 0:
@@ -658,6 +744,11 @@ class WiFiApp(QMainWindow):
             self.stacked_widget.setCurrentIndex(1)
         elif index == 5:
             self.ask_exit_or_minimize()
+        self.sidebar.animate_indicator_to_current(animated=True)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.sidebar.animate_indicator_to_current(animated=False)
 
     def ask_exit_or_minimize(self):
         msg_box = QMessageBox(self)
@@ -790,6 +881,7 @@ class WiFiApp(QMainWindow):
             color: white;
             border: none;
             padding: 10px;
+            border-radius: 8px;
         }}
         QPushButton:hover {{
             background-color: {self.darken_color(color_hex, 0.1)};
@@ -799,6 +891,7 @@ class WiFiApp(QMainWindow):
             color: {text_color};
             border: 1px solid {border_color};
             padding: 5px;
+            border-radius: 8px;
         }}
         QComboBox QAbstractItemView {{
             background-color: {list_bg};
@@ -810,20 +903,40 @@ class WiFiApp(QMainWindow):
             color: {text_color};
             border: 1px solid {border_color};
             outline: none;
+            border-radius: 10px;
+        }}
+        QTextEdit {{
+            background-color: {list_bg};
+            color: {text_color};
+            border: 1px solid {border_color};
+            border-radius: 10px;
         }}
         QListWidget::item {{
             padding: 5px;
             margin: 0px;
             border: none;
+            border-radius: 6px;
         }}
-        QListWidget::item:selected {{
-            background-color: {color_hex};
+        QListWidget::item:hover {{
+            background-color: {self.darken_color(color_hex, 0.1)};
         }}
         QListWidget::item:!enabled {{
             color: #888888;
         }}
+        QProgressBar {{
+            border: 1px solid {border_color};
+            border-radius: 8px;
+            text-align: center;
+            background-color: {list_bg};
+        }}
+        QProgressBar::chunk {{
+            background-color: {color_hex};
+            border-radius: 8px;
+        }}
         """
         QApplication.instance().setStyleSheet(app_style)
+        if hasattr(self, "sidebar"):
+            self.sidebar.viewport().update()
         self.save_settings_to_config()
 
     def darken_color(self, hex_color, factor):
