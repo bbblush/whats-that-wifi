@@ -1,6 +1,6 @@
 # What’s-that-WiFi?
 
-![What's-that-WiFi?](media/app_icon.png)
+![What's-that-WiFi?](data/icon.png)
 
 **What’s-that-WiFi?** is a simple desktop application for Windows that helps you assess the security of public Wi-Fi networks. It automatically scans the airwaves, analyzes key network parameters, and detects signs of **Evil Twin** attacks (fake access points).
 
@@ -22,7 +22,7 @@
     ```
 4.  Run the application:
     ```bash
-    python main.py
+    python main.pyw
     ```
 
 ## ⚙️ Requirements
@@ -32,4 +32,4 @@
 
 ## 📄 License
 
-This project is licensed under the MIT License. See the `LICENSE` file for details.
+MIT (LICENSE file not included yet).

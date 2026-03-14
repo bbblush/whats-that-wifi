@@ -5,14 +5,22 @@ import time
 from fuzzywuzzy import fuzz
 from PyQt5.QtWidgets import (QApplication, QHBoxLayout, QMainWindow, QListWidget, QListWidgetItem,
                              QLabel, QStyle, QVBoxLayout, QWidget, QPushButton, QTextEdit, QAction, QMenu,
-                             QMessageBox, QSystemTrayIcon, QStackedWidget, QComboBox, QFormLayout, QScrollArea, QStyledItemDelegate, QCheckBox)
+                             QMessageBox, QSystemTrayIcon, QStackedWidget, QComboBox, QFormLayout, QScrollArea, QStyledItemDelegate, QCheckBox, QProgressBar)
 from PyQt5.QtGui import QIcon, QColor, QPalette, QPixmap, QPen
-from PyQt5.QtCore import QTimer, Qt, QSize
+from PyQt5.QtCore import QTimer, Qt, QSize, QObject, pyqtSignal, QRunnable, QThreadPool
 from plyer import notification
 import configparser
 import os
+import locale
 
-CONFIG_FILE = 'data/settings.cfg'
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(APP_DIR, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+def resource_path(filename):
+    return os.path.join(DATA_DIR, filename)
+
+CONFIG_FILE = os.path.join(DATA_DIR, "settings.cfg")
 
 config = configparser.ConfigParser()
 config.read(CONFIG_FILE)
@@ -83,12 +91,17 @@ class WiFiAnalyzer:
         self.ssid_pos_match_threshold = 40
         self.ssid_fuzz_threshold = 90
         self.bssid_pos_match_threshold = 50
+        self.vendor_statuses = {}
 
     def scan_networks(self):
         try:
             res = subprocess.run(['netsh', 'wlan', 'show', 'networks', 'mode=Bssid'], stdout=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
-            out = res.stdout.decode('utf-8')
+            out = res.stdout.decode(locale.getpreferredencoding(False), errors='replace')
             networks = self.parse_netsh_output(out)
+            for network in networks:
+                bssid = network.get("bssid")
+                if bssid and bssid in self.vendor_statuses:
+                    network["vendor_status"] = self.vendor_statuses[bssid]
             self.networks = networks
         except Exception as e:
             notification.notify(
@@ -145,11 +158,17 @@ class WiFiAnalyzer:
         else:
             details['evil_twin'] = "No Evil Twin attack detected (0 points)"
 
-        vendor_score = self.check_vendor(bssid)
-        if vendor_score is None:
-            vendor_score = 'unknown'
-        bal += sec_bal['vendor'].get(vendor_score, 0)
-        details['vendor'] = f"Vendor: {vendor_score} ({sec_bal['vendor'][vendor_score]} points)"
+        vendor_status = network.get("vendor_status", "unknown")
+        vendor_pending = False
+        if vendor_status == "checking":
+            vendor_pending = True
+            details['vendor'] = "Vendor: Checking..."
+        elif vendor_status == "failed":
+            bal += sec_bal['vendor'].get('unknown', 0)
+            details['vendor'] = f"Vendor: Failed ({sec_bal['vendor']['unknown']} points)"
+        else:
+            bal += sec_bal['vendor'].get(vendor_status, 0)
+            details['vendor'] = f"Vendor: {vendor_status} ({sec_bal['vendor'][vendor_status]} points)"
 
         connected_devices = network.get("connected_devices", 0)
         if connected_devices > 10:
@@ -162,7 +181,7 @@ class WiFiAnalyzer:
             details["connected_devices"] = f"Connected devices not determined (0 points)"
 
         details['total_score'] = f"Total score: {bal}"
-        return bal, details
+        return bal, details, vendor_pending
 
     def check_evil_twin(self, current_ssid, current_bssid):
         global evil_twin_enabled
@@ -207,14 +226,9 @@ class WiFiAnalyzer:
             response = requests.get(url, timeout=5)
             if response.status_code == 200 and response.text.strip():
                 return 'known'
-        except Exception as e:
-            notification.notify(
-                title="What’s-that-WiFi?",
-                message=(f"Error checking vendor for {bssid}: {e}"),
-                timeout=10
-            )
             return 'unknown'
-        return 'unknown'
+        except Exception:
+            return 'failed'
 
     def is_valid_bssid(self, bssid):
         if not bssid:
@@ -288,17 +302,21 @@ class WiFiAnalyzer:
 class ScoreDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
         text = index.data()
+        meta = index.data(Qt.UserRole)
+        pending_vendor = isinstance(meta, dict) and meta.get("pending_vendor", False)
         try:
             score = int(text.split(" - ")[1])
         except (IndexError, ValueError):
             score = 0
-
-        if score < -10:
-            score_color = QColor("#F44336")
-        elif score <= 10:
-            score_color = QColor("#FFEB3B")
+        if pending_vendor:
+            score_color = QColor("#DDDDDD")
         else:
-            score_color = QColor("#4CAF50")
+            if score < -10:
+                score_color = QColor("#F44336")
+            elif score <= 10:
+                score_color = QColor("#FFEB3B")
+            else:
+                score_color = QColor("#4CAF50")
 
         if option.state & QStyle.State_Selected:
             painter.fillRect(option.rect, option.palette.highlight())
@@ -318,14 +336,40 @@ class ScoreDelegate(QStyledItemDelegate):
         size.setHeight(30)
         return size
 
+class VendorLookupSignals(QObject):
+    finished = pyqtSignal(str, str)
+
+class VendorLookupTask(QRunnable):
+    def __init__(self, analyzer, bssid):
+        super().__init__()
+        self.analyzer = analyzer
+        self.bssid = bssid
+        self.signals = VendorLookupSignals()
+
+    def run(self):
+        status = self.analyzer.check_vendor(self.bssid)
+        self.signals.finished.emit(self.bssid, status)
+
 class NetworksWidget(QWidget):
     def __init__(self, analyzer, app_instance):
         super().__init__()
         self.analyzer = analyzer
         self.app_instance = app_instance
+        self.threadpool = QThreadPool.globalInstance()
+        self.vendor_tasks_in_flight = set()
+        self.vendor_tasks_total = 0
+        self.vendor_tasks_completed = 0
         self.initUI()
 
     def initUI(self):
+        outer_layout = QVBoxLayout()
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFormat("Analysis progress: %p%")
+        outer_layout.addWidget(self.progress_bar)
+
         main_layout = QHBoxLayout()
         self.network_list = QListWidget()
         self.network_list.setItemDelegate(ScoreDelegate())
@@ -346,7 +390,8 @@ class NetworksWidget(QWidget):
 
         right_column_layout.addLayout(button_layout, stretch=1)
         main_layout.addLayout(right_column_layout, stretch=1)
-        self.setLayout(main_layout)
+        outer_layout.addLayout(main_layout)
+        self.setLayout(outer_layout)
 
     def update_networks(self):
         self.details_text.setHtml("<div style='text-align: center; vertical-align: middle; height: 100%; display: table-cell;'>Scanning...</div>")
@@ -354,21 +399,89 @@ class NetworksWidget(QWidget):
         self.analyzer.scan_networks()
 
         self.network_list.clear()
+        self.vendor_tasks_in_flight.clear()
+        self.vendor_tasks_total = 0
+        self.vendor_tasks_completed = 0
+
+        pending_bssids = set()
         for network in self.analyzer.networks:
-            bal, _ = self.analyzer.analyze_network(network)
+            bssid = network.get("bssid")
+            if "vendor_status" not in network:
+                if bssid and self.analyzer.is_valid_bssid(bssid):
+                    network["vendor_status"] = "checking"
+                else:
+                    network["vendor_status"] = "unknown"
+
+            bal, _, vendor_pending = self.analyzer.analyze_network(network)
             ssid = network.get('ssid', 'Unknown')
             item_text = f"{ssid} - {bal}"
-            self.network_list.addItem(item_text)
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.UserRole, {"ssid": ssid, "bssid": bssid, "pending_vendor": vendor_pending})
+            self.network_list.addItem(item)
+
+            if vendor_pending and bssid:
+                pending_bssids.add(bssid)
+
+        self.vendor_tasks_total = len(pending_bssids)
+        if self.vendor_tasks_total == 0:
+            self.progress_bar.setValue(100)
+        else:
+            self.progress_bar.setValue(50)
+            for bssid in pending_bssids:
+                self.vendor_tasks_in_flight.add(bssid)
+                task = VendorLookupTask(self.analyzer, bssid)
+                task.signals.finished.connect(self.on_vendor_checked)
+                self.threadpool.start(task)
 
         self.details_text.setHtml("<div style='text-align: center; vertical-align: middle; height: 100%; display: table-cell;'>Click a network to view details</div>")
 
-    def show_network_details(self, item):
-        full_text = item.text()
-        ssid = full_text.split(" - ")[0]
+    def on_vendor_checked(self, bssid, status):
+        if bssid in self.vendor_tasks_in_flight:
+            self.vendor_tasks_in_flight.remove(bssid)
+            self.vendor_tasks_completed += 1
+            if self.vendor_tasks_total > 0:
+                progress = 50 + int(50 * (self.vendor_tasks_completed / self.vendor_tasks_total))
+                self.progress_bar.setValue(min(100, progress))
+            else:
+                self.progress_bar.setValue(100)
+        self.analyzer.vendor_statuses[bssid] = status
+        for network in self.analyzer.networks:
+            if network.get("bssid") == bssid:
+                network["vendor_status"] = status
 
-        network = next((n for n in self.analyzer.networks if n.get("ssid") == ssid), None)
+        for i in range(self.network_list.count()):
+            item = self.network_list.item(i)
+            meta = item.data(Qt.UserRole) or {}
+            if meta.get("bssid") == bssid:
+                network = next((n for n in self.analyzer.networks if n.get("bssid") == bssid), None)
+                if network:
+                    bal, _, vendor_pending = self.analyzer.analyze_network(network)
+                    ssid = network.get("ssid", "Unknown")
+                    item.setText(f"{ssid} - {bal}")
+                    meta["pending_vendor"] = vendor_pending
+                    item.setData(Qt.UserRole, meta)
+
+        current_item = self.network_list.currentItem()
+        if current_item:
+            meta = current_item.data(Qt.UserRole) or {}
+            if meta.get("bssid") == bssid:
+                network = next((n for n in self.analyzer.networks if n.get("bssid") == bssid), None)
+                if network:
+                    _, details, _ = self.analyzer.analyze_network(network)
+                    details_text_content = "\n".join(details.values())
+                    self.details_text.setText(details_text_content)
+
+    def show_network_details(self, item):
+        meta = item.data(Qt.UserRole) or {}
+        bssid = meta.get("bssid")
+        if bssid:
+            network = next((n for n in self.analyzer.networks if n.get("bssid") == bssid), None)
+        else:
+            full_text = item.text()
+            ssid = full_text.split(" - ")[0]
+            network = next((n for n in self.analyzer.networks if n.get("ssid") == ssid), None)
         if network:
-            _, details = self.analyzer.analyze_network(network)
+            _, details, _ = self.analyzer.analyze_network(network)
             details_text_content = "\n".join(details.values())
             self.details_text.setText(details_text_content)
 
@@ -441,7 +554,7 @@ class AboutWidget(QWidget):
         layout.addWidget(title_label, alignment=Qt.AlignCenter)
 
         icon_label = QLabel()
-        icon_path = "data/icon.png"
+        icon_path = resource_path("icon.png")
         if os.path.exists(icon_path):
             pixmap = QPixmap(icon_path)
             if not pixmap.isNull():
@@ -475,7 +588,7 @@ class WiFiApp(QMainWindow):
         self.create_tray_icon()
         self.previous_ssid = None
         self.start_background_monitoring()
-        self.setWindowIcon(QIcon("data/icon.png"))
+        self.setWindowIcon(QIcon(resource_path("icon.png")))
         self.apply_accent_color(accent_color)
 
     def initUI(self):
@@ -498,7 +611,7 @@ class WiFiApp(QMainWindow):
         self.sidebar.setSpacing(5)
         self.sidebar.setIconSize(QSize(24, 24))
 
-        about_item = QListWidgetItem(QIcon("data/icon.png"), "About")
+        about_item = QListWidgetItem(QIcon(resource_path("icon.png")), "About")
         about_item.setToolTip("About")
         self.sidebar.addItem(about_item)
 
@@ -507,11 +620,11 @@ class WiFiApp(QMainWindow):
         separator1.setText("---------------")
         self.sidebar.addItem(separator1)
 
-        networks_item = QListWidgetItem(QIcon("data/wifi_icon.png"), "Networks")
+        networks_item = QListWidgetItem(QIcon(resource_path("wifi_icon.png")), "Networks")
         networks_item.setToolTip("Networks")
         self.sidebar.addItem(networks_item)
 
-        settings_item = QListWidgetItem(QIcon("data/settings_icon.png"), "Settings")
+        settings_item = QListWidgetItem(QIcon(resource_path("settings_icon.png")), "Settings")
         settings_item.setToolTip("Settings")
         self.sidebar.addItem(settings_item)
 
@@ -520,7 +633,7 @@ class WiFiApp(QMainWindow):
         separator2.setText("---------------")
         self.sidebar.addItem(separator2)
 
-        exit_item = QListWidgetItem(QIcon("data/exit_icon.png"), "Exit")
+        exit_item = QListWidgetItem(QIcon(resource_path("exit_icon.png")), "Exit")
         exit_item.setToolTip("Exit")
         self.sidebar.addItem(exit_item)
 
@@ -583,7 +696,7 @@ class WiFiApp(QMainWindow):
             )
             return
         self.tray_icon = QSystemTrayIcon(self)
-        self.tray_icon.setIcon(QIcon("data/icon.png"))
+        self.tray_icon.setIcon(QIcon(resource_path("icon.png")))
         menu = QMenu()
         restore_action = QAction("Open", self)
         restore_action.triggered.connect(self.show)
@@ -610,7 +723,7 @@ class WiFiApp(QMainWindow):
         try:
             self.analyzer.scan_networks()
             res = subprocess.run(['netsh', 'wlan', 'show', 'interfaces'], stdout=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
-            out = res.stdout.decode('utf-8')
+            out = res.stdout.decode(locale.getpreferredencoding(False), errors='replace')
             ssid = None
             for line in out.split('\n'):
                 if "SSID" in line and "BSSID" not in line:
@@ -620,7 +733,7 @@ class WiFiApp(QMainWindow):
                 self.previous_ssid = ssid
                 network = next((n for n in self.analyzer.networks if n.get("ssid") == ssid), None)
                 if network:
-                    bal, _ = self.analyzer.analyze_network(network)
+                    bal, _, _ = self.analyzer.analyze_network(network)
                     self.send_notification(ssid, bal)
         except Exception as e:
             notification.notify(
