@@ -5,13 +5,14 @@ import time
 from fuzzywuzzy import fuzz
 from PyQt5.QtWidgets import (QApplication, QHBoxLayout, QMainWindow, QListWidget, QListWidgetItem,
                              QLabel, QStyle, QVBoxLayout, QWidget, QPushButton, QTextEdit, QAction, QMenu,
-                             QMessageBox, QSystemTrayIcon, QStackedWidget, QComboBox, QFormLayout, QScrollArea, QStyledItemDelegate, QCheckBox, QProgressBar)
+                             QMessageBox, QSystemTrayIcon, QStackedWidget, QComboBox, QFormLayout, QScrollArea, QStyledItemDelegate, QCheckBox, QProgressBar, QInputDialog, QLineEdit, QGraphicsDropShadowEffect, QGraphicsOpacityEffect)
 from PyQt5.QtGui import QIcon, QColor, QPalette, QPixmap, QPen, QPainter
 from PyQt5.QtCore import QTimer, Qt, QSize, QObject, pyqtSignal, QRunnable, QThreadPool, QPropertyAnimation, QEasingCurve, QRect, pyqtProperty
 from plyer import notification
 import configparser
 import os
 import locale
+import tempfile
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(APP_DIR, "data")
@@ -21,6 +22,14 @@ def resource_path(filename):
     return os.path.join(DATA_DIR, filename)
 
 CONFIG_FILE = os.path.join(DATA_DIR, "settings.cfg")
+
+def apply_shadow(widget, radius=16, color=QColor(0, 0, 0, 90), offset=(0, 4)):
+    effect = QGraphicsDropShadowEffect()
+    effect.setBlurRadius(radius)
+    effect.setColor(color)
+    effect.setOffset(offset[0], offset[1])
+    widget.setGraphicsEffect(effect)
+    return effect
 
 config = configparser.ConfigParser()
 config.read(CONFIG_FILE)
@@ -362,10 +371,6 @@ class SidebarListWidget(QListWidget):
         rect = self.visualItemRect(item)
         if rect.isNull():
             return
-        # Tweak these to fine-tune the indicator's position/size.
-        # inset_x: left/right padding inside the item rect
-        # inset_y: top/bottom padding inside the item rect
-        # y_offset: vertical shift (positive moves the indicator down)
         inset_x = 2
         inset_y = 4
         y_offset = 2
@@ -419,6 +424,7 @@ class NetworksWidget(QWidget):
         self.vendor_tasks_in_flight = set()
         self.vendor_tasks_total = 0
         self.vendor_tasks_completed = 0
+        self.current_network = None
         self.initUI()
 
     def initUI(self):
@@ -435,12 +441,25 @@ class NetworksWidget(QWidget):
         self.network_list.setItemDelegate(ScoreDelegate())
         self.network_list.itemClicked.connect(self.show_network_details)
         main_layout.addWidget(self.network_list, stretch=1)
+        apply_shadow(self.network_list)
 
         right_column_layout = QVBoxLayout()
+        self.details_container = QWidget()
+        details_container_layout = QVBoxLayout()
+        details_container_layout.setContentsMargins(0, 0, 0, 0)
         self.details_text = QTextEdit()
         self.details_text.setReadOnly(True)
         self.details_text.setHtml("<div style='text-align: center; vertical-align: middle; height: 100%; display: table-cell;'>Click a network to view details</div>")
-        right_column_layout.addWidget(self.details_text, stretch=4)
+        details_container_layout.addWidget(self.details_text)
+        self.details_container.setLayout(details_container_layout)
+        right_column_layout.addWidget(self.details_container, stretch=4)
+        apply_shadow(self.details_container)
+        self.details_opacity = QGraphicsOpacityEffect(self.details_container)
+        self.details_container.setGraphicsEffect(self.details_opacity)
+        self.details_opacity.setOpacity(1.0)
+        self.details_fade = QPropertyAnimation(self.details_opacity, b"opacity")
+        self.details_fade.setDuration(180)
+        self.details_fade.setEasingCurve(QEasingCurve.InOutQuad)
 
         button_layout = QHBoxLayout()
         self.scan_button = QPushButton('Scan Nearby Networks')
@@ -449,6 +468,16 @@ class NetworksWidget(QWidget):
         self.scan_button.pressed.connect(self.on_scan_pressed)
         self.scan_button.released.connect(self.on_scan_released)
         button_layout.addWidget(self.scan_button, stretch=8)
+        self.scan_shadow = apply_shadow(self.scan_button, radius=18, color=QColor(0, 0, 0, 110), offset=(0, 6))
+
+        self.connect_button = QPushButton('Connect')
+        self.connect_button.setMinimumHeight(40)
+        self.connect_button.setEnabled(False)
+        self.connect_button.clicked.connect(self.on_connect_clicked)
+        self.connect_button.pressed.connect(self.on_connect_pressed)
+        self.connect_button.released.connect(self.on_connect_released)
+        button_layout.addWidget(self.connect_button, stretch=4)
+        self.connect_shadow = apply_shadow(self.connect_button, radius=18, color=QColor(0, 0, 0, 110), offset=(0, 6))
 
         right_column_layout.addLayout(button_layout, stretch=1)
         main_layout.addLayout(right_column_layout, stretch=1)
@@ -502,6 +531,8 @@ class NetworksWidget(QWidget):
             self.scan_button_anim = QPropertyAnimation(self.scan_button, b"geometry")
             self.scan_button_anim.setDuration(90)
             self.scan_button_anim.setEasingCurve(QEasingCurve.OutQuad)
+        if hasattr(self, "scan_shadow") and self.scan_shadow is not None:
+            self.scan_shadow.setEnabled(False)
         self._scan_button_geom = self.scan_button.geometry()
         rect = self._scan_button_geom
         shrink = 4
@@ -514,11 +545,21 @@ class NetworksWidget(QWidget):
     def on_scan_released(self):
         if not hasattr(self, "scan_button_anim"):
             return
+        if hasattr(self, "scan_shadow") and self.scan_shadow is not None:
+            self.scan_shadow.setEnabled(True)
         rect = getattr(self, "_scan_button_geom", self.scan_button.geometry())
         self.scan_button_anim.stop()
         self.scan_button_anim.setStartValue(self.scan_button.geometry())
         self.scan_button_anim.setEndValue(rect)
         self.scan_button_anim.start()
+
+    def on_connect_pressed(self):
+        if hasattr(self, "connect_shadow") and self.connect_shadow is not None:
+            self.connect_shadow.setEnabled(False)
+
+    def on_connect_released(self):
+        if hasattr(self, "connect_shadow") and self.connect_shadow is not None:
+            self.connect_shadow.setEnabled(True)
 
     def on_vendor_checked(self, bssid, status):
         if bssid in self.vendor_tasks_in_flight:
@@ -566,9 +607,58 @@ class NetworksWidget(QWidget):
             ssid = full_text.split(" - ")[0]
             network = next((n for n in self.analyzer.networks if n.get("ssid") == ssid), None)
         if network:
+            self.current_network = network
+            self.connect_button.setEnabled(True)
             _, details, _ = self.analyzer.analyze_network(network)
             details_text_content = "\n".join(details.values())
-            self.details_text.setText(details_text_content)
+            self.fade_details_to(details_text_content)
+        else:
+            self.current_network = None
+            self.connect_button.setEnabled(False)
+
+    def fade_details_to(self, text):
+        self.details_fade.stop()
+        self.details_fade.setStartValue(1.0)
+        self.details_fade.setEndValue(0.0)
+        def _after_fade_out():
+            try:
+                self.details_fade.finished.disconnect(_after_fade_out)
+            except Exception:
+                pass
+            self.details_text.setText(text)
+            self.details_fade.setStartValue(0.0)
+            self.details_fade.setEndValue(1.0)
+            self.details_fade.start()
+        self.details_fade.finished.connect(_after_fade_out)
+        self.details_fade.start()
+    def on_connect_clicked(self):
+        network = self.current_network
+        if not network:
+            return
+        ssid = network.get("ssid")
+        if not ssid:
+            QMessageBox.warning(self, "Connect", "SSID not found for this network.")
+            return
+
+        if self.app_instance.try_connect_existing(ssid):
+            QMessageBox.information(self, "Connect", f"Connecting to '{ssid}'...")
+            return
+
+        encryption = (network.get("encryption") or "").lower()
+        is_open = "open" in encryption or "открыт" in encryption or "none" in encryption
+
+        if not is_open:
+            password, ok = QInputDialog.getText(self, "Wi-Fi Password", f"Enter password for '{ssid}':", QLineEdit.Password)
+            if not ok:
+                return
+        else:
+            password = ""
+
+        success, message = self.app_instance.create_profile_and_connect(ssid, password, is_open)
+        if success:
+            QMessageBox.information(self, "Connect", message)
+        else:
+            QMessageBox.warning(self, "Connect", message)
 
     def close_application(self):
         self.app_instance.close_application()
@@ -695,6 +785,7 @@ class WiFiApp(QMainWindow):
         self.sidebar.setMaximumWidth(150)
         self.sidebar.setSpacing(5)
         self.sidebar.setIconSize(QSize(24, 24))
+        apply_shadow(self.sidebar, radius=18, color=QColor(0, 0, 0, 90), offset=(0, 6))
 
         about_item = QListWidgetItem(QIcon(resource_path("icon.png")), "About")
         about_item.setToolTip("About")
@@ -849,6 +940,93 @@ class WiFiApp(QMainWindow):
             message=message,
             timeout=10
         )
+
+    def try_connect_existing(self, ssid):
+        try:
+            res = subprocess.run(['netsh', 'wlan', 'connect', f'name={ssid}'],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 creationflags=subprocess.CREATE_NO_WINDOW)
+            return res.returncode == 0
+        except Exception:
+            return False
+
+    def create_profile_and_connect(self, ssid, password, is_open):
+        profile_xml = self._build_wlan_profile_xml(ssid, password, is_open)
+        profile_path = None
+        try:
+            with tempfile.NamedTemporaryFile("w", delete=False, suffix=".xml", encoding="utf-8") as f:
+                f.write(profile_xml)
+                profile_path = f.name
+            add_res = subprocess.run(['netsh', 'wlan', 'add', 'profile', f'filename={profile_path}', 'user=current'],
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                     creationflags=subprocess.CREATE_NO_WINDOW)
+            if add_res.returncode != 0:
+                return False, "Failed to add Wi-Fi profile."
+            conn_res = subprocess.run(['netsh', 'wlan', 'connect', f'name={ssid}'],
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      creationflags=subprocess.CREATE_NO_WINDOW)
+            if conn_res.returncode == 0:
+                return True, f"Connecting to '{ssid}'..."
+            return False, "Failed to connect with the new profile."
+        except Exception:
+            return False, "Failed to create Wi-Fi profile."
+        finally:
+            try:
+                if profile_path and os.path.exists(profile_path):
+                    os.remove(profile_path)
+            except Exception:
+                pass
+
+    def _build_wlan_profile_xml(self, ssid, password, is_open):
+        ssid_escaped = ssid.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        if is_open:
+            return f"""<?xml version="1.0"?>
+<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
+    <name>{ssid_escaped}</name>
+    <SSIDConfig>
+        <SSID>
+            <name>{ssid_escaped}</name>
+        </SSID>
+    </SSIDConfig>
+    <connectionType>ESS</connectionType>
+    <connectionMode>auto</connectionMode>
+    <MSM>
+        <security>
+            <authEncryption>
+                <authentication>open</authentication>
+                <encryption>none</encryption>
+                <useOneX>false</useOneX>
+            </authEncryption>
+        </security>
+    </MSM>
+</WLANProfile>
+"""
+        return f"""<?xml version="1.0"?>
+<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
+    <name>{ssid_escaped}</name>
+    <SSIDConfig>
+        <SSID>
+            <name>{ssid_escaped}</name>
+        </SSID>
+    </SSIDConfig>
+    <connectionType>ESS</connectionType>
+    <connectionMode>auto</connectionMode>
+    <MSM>
+        <security>
+            <authEncryption>
+                <authentication>WPA2PSK</authentication>
+                <encryption>AES</encryption>
+                <useOneX>false</useOneX>
+            </authEncryption>
+            <sharedKey>
+                <keyType>passPhrase</keyType>
+                <protected>false</protected>
+                <keyMaterial>{password}</keyMaterial>
+            </sharedKey>
+        </security>
+    </MSM>
+</WLANProfile>
+"""
 
     def apply_accent_color(self, color_hex):
         global accent_color

@@ -1,0 +1,9 @@
+# Runtime-generated config
+settings.cfg
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+.vscode/*
+__pycache__/*
