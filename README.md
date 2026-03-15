@@ -30,6 +30,4 @@
 *   Operating System: **Windows** (as it uses the `netsh` command).
 *   Python 3.8+
 
-## 📄 License
-
-MIT (LICENSE file not included yet).
+## 📄 License - MIT
