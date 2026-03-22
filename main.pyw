@@ -832,6 +832,7 @@ class NetworksWidget(QWidget):
             self.details_text.setText(details_text_content)
         else:
             self.details_text.setHtml(f"<div style='text-align: center; vertical-align: middle; height: 100%; display: table-cell;'>{t('details_placeholder')}</div>")
+
     def on_connect_clicked(self):
         network = self.current_network
         if not network:
