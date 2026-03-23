@@ -5,14 +5,13 @@ import time
 from fuzzywuzzy import fuzz
 from PyQt5.QtWidgets import (QApplication, QHBoxLayout, QMainWindow, QListWidget, QListWidgetItem,
                              QLabel, QStyle, QVBoxLayout, QWidget, QPushButton, QTextEdit, QAction, QMenu,
-                             QMessageBox, QSystemTrayIcon, QStackedWidget, QComboBox, QFormLayout, QScrollArea, QStyledItemDelegate, QCheckBox, QProgressBar, QInputDialog, QLineEdit, QGraphicsDropShadowEffect, QGraphicsOpacityEffect)
+                             QMessageBox, QSystemTrayIcon, QStackedWidget, QComboBox, QFormLayout, QScrollArea, QStyledItemDelegate, QCheckBox, QProgressBar, QGraphicsDropShadowEffect, QGraphicsOpacityEffect)
 from PyQt5.QtGui import QIcon, QColor, QPalette, QPixmap, QPen, QPainter
 from PyQt5.QtCore import QTimer, Qt, QSize, QObject, pyqtSignal, QRunnable, QThreadPool, QPropertyAnimation, QEasingCurve, QRect, pyqtProperty
 from plyer import notification
 import configparser
 import os
 import locale
-import tempfile
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(APP_DIR, "data")
@@ -95,7 +94,6 @@ TRANSLATIONS = {
     'en': {
         'app_title': "What's-that-WiFi?",
         'scan_button': "Scan Nearby Networks",
-        'connect_button': "Connect",
         'analysis_progress': "Analysis progress: %p%",
         'details_placeholder': "Click a network to view details",
         'details_scanning': "Scanning...",
@@ -128,15 +126,6 @@ TRANSLATIONS = {
         'exit_prompt': "Do you want to exit the application or minimize it to the tray?",
         'exit_action': "Exit",
         'minimize_action': "Minimize (tray)",
-        'cancel_action': "Cancel",
-        'connect_title': "Connect",
-        'connect_ssid_missing': "SSID not found for this network.",
-        'connect_connecting': "Connecting to '{ssid}'...",
-        'connect_password_title': "Wi-Fi Password",
-        'connect_password_prompt': "Enter password for '{ssid}':",
-        'profile_add_failed': "Failed to add Wi-Fi profile.",
-        'connect_failed': "Failed to connect with the new profile.",
-        'profile_create_failed': "Failed to create Wi-Fi profile.",
         'notify_crit': "Network '{ssid}' is critically unsafe! Score: {score}",
         'notify_unsafe': "Network '{ssid}' is unsafe. Score: {score}",
         'notify_rel_safe': "Network '{ssid}' is relatively safe. Score: {score}",
@@ -159,7 +148,6 @@ TRANSLATIONS = {
     'ru': {
         'app_title': "What's-that-WiFi?",
         'scan_button': "Сканировать сети",
-        'connect_button': "Подключиться",
         'analysis_progress': "Прогресс анализа: %p%",
         'details_placeholder': "Выберите сеть, чтобы увидеть детали",
         'details_scanning': "Сканирование...",
@@ -192,15 +180,6 @@ TRANSLATIONS = {
         'exit_prompt': "Выйти из приложения или свернуть в трей?",
         'exit_action': "Выйти",
         'minimize_action': "Свернуть в трей",
-        'cancel_action': "Отмена",
-        'connect_title': "Подключение",
-        'connect_ssid_missing': "SSID для этой сети не найден.",
-        'connect_connecting': "Подключение к '{ssid}'...",
-        'connect_password_title': "Пароль Wi-Fi",
-        'connect_password_prompt': "Введите пароль для '{ssid}':",
-        'profile_add_failed': "Не удалось добавить профиль Wi-Fi.",
-        'connect_failed': "Не удалось подключиться с новым профилем.",
-        'profile_create_failed': "Не удалось создать профиль Wi-Fi.",
         'notify_crit': "Сеть '{ssid}' крайне небезопасна! Балл: {score}",
         'notify_unsafe': "Сеть '{ssid}' небезопасна. Балл: {score}",
         'notify_rel_safe': "Сеть '{ssid}' относительно безопасна. Балл: {score}",
@@ -647,15 +626,6 @@ class NetworksWidget(QWidget):
         button_layout.addWidget(self.scan_button, stretch=8)
         self.scan_shadow = apply_shadow(self.scan_button, radius=18, color=QColor(0, 0, 0, 110), offset=(0, 6))
 
-        self.connect_button = QPushButton(t('connect_button'))
-        self.connect_button.setMinimumHeight(40)
-        self.connect_button.setEnabled(False)
-        self.connect_button.clicked.connect(self.on_connect_clicked)
-        self.connect_button.pressed.connect(self.on_connect_pressed)
-        self.connect_button.released.connect(self.on_connect_released)
-        button_layout.addWidget(self.connect_button, stretch=4)
-        self.connect_shadow = apply_shadow(self.connect_button, radius=18, color=QColor(0, 0, 0, 110), offset=(0, 6))
-
         right_column_layout.addLayout(button_layout, stretch=1)
         main_layout.addLayout(right_column_layout, stretch=1)
         outer_layout.addLayout(main_layout)
@@ -730,13 +700,6 @@ class NetworksWidget(QWidget):
         self.scan_button_anim.setEndValue(rect)
         self.scan_button_anim.start()
 
-    def on_connect_pressed(self):
-        if hasattr(self, "connect_shadow") and self.connect_shadow is not None:
-            self.connect_shadow.setEnabled(False)
-
-    def on_connect_released(self):
-        if hasattr(self, "connect_shadow") and self.connect_shadow is not None:
-            self.connect_shadow.setEnabled(True)
 
     def on_vendor_checked(self, bssid, status):
         if bssid in self.vendor_tasks_in_flight:
@@ -785,13 +748,11 @@ class NetworksWidget(QWidget):
             network = next((n for n in self.analyzer.networks if n.get("ssid") == ssid), None)
         if network:
             self.current_network = network
-            self.connect_button.setEnabled(True)
             _, details, _ = self.analyzer.analyze_network(network)
             details_text_content = "\n".join(details.values())
             self.fade_details_to(details_text_content)
         else:
             self.current_network = None
-            self.connect_button.setEnabled(False)
 
     def fade_details_to(self, text):
         self.details_fade.stop()
@@ -812,7 +773,6 @@ class NetworksWidget(QWidget):
     def apply_language(self):
         self.progress_bar.setFormat(t('analysis_progress'))
         self.scan_button.setText(t('scan_button'))
-        self.connect_button.setText(t('connect_button'))
         for i in range(self.network_list.count()):
             item = self.network_list.item(i)
             meta = item.data(Qt.UserRole) or {}
@@ -832,35 +792,6 @@ class NetworksWidget(QWidget):
             self.details_text.setText(details_text_content)
         else:
             self.details_text.setHtml(f"<div style='text-align: center; vertical-align: middle; height: 100%; display: table-cell;'>{t('details_placeholder')}</div>")
-
-    def on_connect_clicked(self):
-        network = self.current_network
-        if not network:
-            return
-        ssid = network.get("ssid")
-        if not ssid:
-            QMessageBox.warning(self, t('connect_title'), t('connect_ssid_missing'))
-            return
-
-        if self.app_instance.try_connect_existing(ssid):
-            QMessageBox.information(self, t('connect_title'), t('connect_connecting', ssid=ssid))
-            return
-
-        encryption = (network.get("encryption") or "").lower()
-        is_open = "open" in encryption or "открыт" in encryption or "none" in encryption
-
-        if not is_open:
-            password, ok = QInputDialog.getText(self, t('connect_password_title'), t('connect_password_prompt', ssid=ssid), QLineEdit.Password)
-            if not ok:
-                return
-        else:
-            password = ""
-
-        success, message = self.app_instance.create_profile_and_connect(ssid, password, is_open)
-        if success:
-            QMessageBox.information(self, t('connect_title'), message)
-        else:
-            QMessageBox.warning(self, t('connect_title'), message)
 
     def close_application(self):
         self.app_instance.close_application()
@@ -1222,92 +1153,6 @@ class WiFiApp(QMainWindow):
             timeout=10
         )
 
-    def try_connect_existing(self, ssid):
-        try:
-            res = subprocess.run(['netsh', 'wlan', 'connect', f'name={ssid}'],
-                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                 creationflags=subprocess.CREATE_NO_WINDOW)
-            return res.returncode == 0
-        except Exception:
-            return False
-
-    def create_profile_and_connect(self, ssid, password, is_open):
-        profile_xml = self._build_wlan_profile_xml(ssid, password, is_open)
-        profile_path = None
-        try:
-            with tempfile.NamedTemporaryFile("w", delete=False, suffix=".xml", encoding="utf-8") as f:
-                f.write(profile_xml)
-                profile_path = f.name
-            add_res = subprocess.run(['netsh', 'wlan', 'add', 'profile', f'filename={profile_path}', 'user=current'],
-                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                     creationflags=subprocess.CREATE_NO_WINDOW)
-            if add_res.returncode != 0:
-                return False, t('profile_add_failed')
-            conn_res = subprocess.run(['netsh', 'wlan', 'connect', f'name={ssid}'],
-                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                      creationflags=subprocess.CREATE_NO_WINDOW)
-            if conn_res.returncode == 0:
-                return True, t('connect_connecting', ssid=ssid)
-            return False, t('connect_failed')
-        except Exception:
-            return False, t('profile_create_failed')
-        finally:
-            try:
-                if profile_path and os.path.exists(profile_path):
-                    os.remove(profile_path)
-            except Exception:
-                pass
-
-    def _build_wlan_profile_xml(self, ssid, password, is_open):
-        ssid_escaped = ssid.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        if is_open:
-            return f"""<?xml version="1.0"?>
-<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
-    <name>{ssid_escaped}</name>
-    <SSIDConfig>
-        <SSID>
-            <name>{ssid_escaped}</name>
-        </SSID>
-    </SSIDConfig>
-    <connectionType>ESS</connectionType>
-    <connectionMode>auto</connectionMode>
-    <MSM>
-        <security>
-            <authEncryption>
-                <authentication>open</authentication>
-                <encryption>none</encryption>
-                <useOneX>false</useOneX>
-            </authEncryption>
-        </security>
-    </MSM>
-</WLANProfile>
-"""
-        return f"""<?xml version="1.0"?>
-<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
-    <name>{ssid_escaped}</name>
-    <SSIDConfig>
-        <SSID>
-            <name>{ssid_escaped}</name>
-        </SSID>
-    </SSIDConfig>
-    <connectionType>ESS</connectionType>
-    <connectionMode>auto</connectionMode>
-    <MSM>
-        <security>
-            <authEncryption>
-                <authentication>WPA2PSK</authentication>
-                <encryption>AES</encryption>
-                <useOneX>false</useOneX>
-            </authEncryption>
-            <sharedKey>
-                <keyType>passPhrase</keyType>
-                <protected>false</protected>
-                <keyMaterial>{password}</keyMaterial>
-            </sharedKey>
-        </security>
-    </MSM>
-</WLANProfile>
-"""
 
     def apply_accent_color(self, color_hex):
         global accent_color
