@@ -208,6 +208,9 @@ def t(key, **kwargs):
         return text.format(**kwargs)
     return text
 
+#============================================
+#====таблица выставления баллов 
+
 sec_bal = {
     'encryption': {
         'open': -50,
@@ -247,6 +250,9 @@ sec_bal = {
         '5 GHz': 5
     }
 }
+
+#========================================
+#==== анализатор сетей (все одновременно)
 
 class WiFiAnalyzer:
     def __init__(self):
