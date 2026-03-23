@@ -11,6 +11,7 @@
 *   **Simple Interface:** An intuitive GUI with color-coded security indicators (green/yellow/red).
 *   **Background Operation:** The app runs in the system tray and automatically analyzes the network you connect to.
 *   **Flexible Settings:** Choose a theme (Light, Dark, OLED) and disable Evil Twin checks (not recommended).
+*   **Multi-language UI:** English and Russian.
 
 ## 🚀 Installation and Launch
 
